@@ -4,21 +4,25 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 import numpy as np
-from collections import deque
+from collections import deque, defaultdict
 import time
+import matplotlib.pyplot as plt
+from pathlib import Path
 
 ENV_NAME = "CartPole-v1"
 GAMMA = 0.99
 LR = 1e-3
 BATCH_SIZE = 64
 MEMORY_SIZE = 10000
-TARGET_UPDATE_FREQ = 1000
+TARGET_UPDATE_FREQ = 500
 EPS_START = 1.0
 EPS_END = 0.05
 EPS_DECAY = 5000
-MAX_EPISODES = 300
+MAX_EPISODES = 1024
 MAX_STEPS = 500
-MODEL_PATH = "dqn_cartpole.pth"
+MODEL_PATH = "./model/dqn_cartpole.pth"
+BEST_MODEL_PATH = "./model/best_dqn_cartpole.pth"
+RES_PATH: str = "./RESULT"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -38,13 +42,16 @@ class DQN(nn.Module):
 class ReplayBuffer:
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
+
     def push(self, state, action, reward, next_state, done):
         self.buffer.append((state, action, reward, next_state, done))
+
     def sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
         return (np.array(states), np.array(actions), np.array(rewards, dtype=np.float32),
                 np.array(next_states), np.array(dones, dtype=np.uint8))
+
     def __len__(self):
         return len(self.buffer)
 
@@ -66,10 +73,17 @@ def train():
 
     frame_idx = 0
 
+    rewards_per_episode = []  # List to track rewards per episode
+    epsilons_per_episode = []  # List to track epsilon values per episode
+
+    best_total_reward = -float('inf')
+    best_model_state_dict = None
+
     for episode in range(MAX_EPISODES):
         state, _ = env.reset()
         total_reward = 0
 
+        epsilon: float = 0.0
         for step in range(MAX_STEPS):
             epsilon = epsilon_by_frame(frame_idx)
             frame_idx += 1
@@ -116,11 +130,44 @@ def train():
             if done:
                 break
 
+        rewards_per_episode.append(total_reward)  # Collect total reward per episode
+        epsilons_per_episode.append(epsilon)  # Collect epsilon per episode
+
+        # Save the best model based on total reward
+        if total_reward > best_total_reward:
+            best_total_reward = total_reward
+            best_model_state_dict = policy_net.state_dict()
+            torch.save(best_model_state_dict, BEST_MODEL_PATH)
+            print(f"New best model saved with total reward: {total_reward:.2f}")
+
         print(f"Episode {episode+1}, Total reward: {total_reward:.2f}, Epsilon: {epsilon:.3f}")
 
+    # Save the final model (even if it's not the best)
     torch.save(policy_net.state_dict(), MODEL_PATH)
     print(f"Model saved to {MODEL_PATH}")
     env.close()
+
+    return rewards_per_episode, epsilons_per_episode
+
+def plot_results(rewards_per_episode: list, epsilons_per_episode: list) -> None:
+    # Plot total rewards per episode
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.plot(rewards_per_episode)
+    plt.xlabel('Episode')
+    plt.ylabel('Total Reward')
+    plt.title('Total Reward per Episode')
+
+    # Plot epsilon decay
+    plt.subplot(1, 2, 2)
+    plt.plot(epsilons_per_episode)
+    plt.xlabel('Episode')
+    plt.ylabel('Epsilon')
+    plt.title('Epsilon Decay')
+
+    plt.tight_layout()
+    plt.savefig(Path(RES_PATH).joinpath("train_result.png"))
+    plt.show()
 
 def play():
     env = gym.make(ENV_NAME, render_mode="human")
@@ -128,7 +175,7 @@ def play():
     n_actions = env.action_space.n
 
     policy_net = DQN(obs_dim, n_actions).to(device)
-    policy_net.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    policy_net.load_state_dict(torch.load(BEST_MODEL_PATH, map_location=device))  # Load the best model
     policy_net.eval()
 
     state, _ = env.reset()
@@ -154,5 +201,6 @@ def play():
     env.close()
 
 if __name__ == "__main__":
-    # train()    # 先训练并保存模型
-    play()     # 再加载模型并人类可视化玩一局
+    # rewards_per_episode, epsilons_per_episode = train()  # 训练并返回结果
+    # plot_results(rewards_per_episode, epsilons_per_episode)  # 绘制结果图
+    play()
